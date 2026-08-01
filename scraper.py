@@ -1,8 +1,8 @@
 """
-Reddit Comment Scraper (Selenium Driver)
+Reddit Comment Scraper (Selenium Engine)
 ===========================================
-Uses headless Chrome browser via Selenium to fetch posts and comments.
-Bypasses all Reddit bot/API blocks without needing client IDs or API keys.
+Uses headless Chrome browser via Selenium to fetch posts and ALL comments.
+Includes interactive expansion loop for 'load more comments' buttons.
 
 Usage:
     python scraper.py "https://www.reddit.com/r/tamilyapping/s/msP5EVihR7"
@@ -18,8 +18,13 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Force UTF-8 output encoding for Windows terminal safety
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
@@ -35,13 +40,11 @@ def create_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--blink-settings=imagesEnabled=false")  # fast load
+    options.add_argument("--blink-settings=imagesEnabled=false")
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
-    
-    # Suppress chrome logging
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
     service = Service(ChromeDriverManager().install())
@@ -71,19 +74,59 @@ def flatten(comments: list, flat: list = None) -> list:
     return flat
 
 
+def expand_all_comments(driver, log=print):
+    """
+    Repeatedly scroll and click all 'shreddit-more-comment' / 'view more' buttons
+    to fully hydrate every single comment on the post.
+    """
+    log("Expanding all comment threads ...", "info")
+
+    for iteration in range(1, 10):
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1.5)
+
+        # Find buttons / elements for more comments
+        more_elements = driver.find_elements(
+            By.CSS_SELECTOR, "shreddit-more-comment, button, faceplate-partial"
+        )
+        clicked = 0
+        for el in more_elements:
+            try:
+                tag = el.tag_name
+                txt = el.text.lower()
+                if (
+                    tag == "shreddit-more-comment"
+                    or "more" in txt
+                    or "view" in txt
+                    or "reply" in txt
+                    or "replies" in txt
+                ):
+                    driver.execute_script("arguments[0].click();", el)
+                    clicked += 1
+            except Exception:
+                pass
+
+        total_loaded = len(driver.find_elements(By.TAG_NAME, "shreddit-comment"))
+        if clicked > 0:
+            log(f"  [Pass {iteration}] Clicked {clicked} expand buttons -> {total_loaded} comments", "info")
+        else:
+            if iteration > 2:
+                break
+
+
 def scrape(url: str, driver=None, progress_cb=None) -> dict:
-    """
-    Scrape comments from a Reddit URL using Selenium.
-    """
     def log(msg, kind="info"):
         if progress_cb:
             progress_cb(msg, kind)
         else:
-            print(msg)
+            try:
+                print(msg)
+            except UnicodeEncodeError:
+                print(msg.encode("ascii", errors="replace").decode("ascii"))
 
     close_driver_on_exit = False
     if driver is None:
-        log("Launching headless browser …", "info")
+        log("Launching headless browser ...", "info")
         driver = create_driver()
         close_driver_on_exit = True
 
@@ -95,21 +138,13 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         final_url = driver.current_url
         log(f"Resolved URL: {final_url}", "info")
 
-        # Scroll to load dynamically rendered comments
-        log("Loading comments forest …", "info")
-        last_height = driver.execute_script("return document.body.scrollHeight")
-        for scroll in range(4):
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                break
-            last_height = new_height
+        # Hydrate all comments by scrolling & expanding
+        expand_all_comments(driver, log=log)
 
         page_source = driver.page_source
         soup = BeautifulSoup(page_source, "html.parser")
 
-        # Extract Post Metadata
+        # Extract Post Title
         post_title_el = (
             soup.find("h1")
             or soup.find("shreddit-title")
@@ -117,9 +152,7 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         )
         post_title = post_title_el.text.strip() if post_title_el else "Reddit Post"
 
-        # Try extract subreddit & author from shreddit components or HTML meta
         subreddit = ""
-        sub_meta = soup.find("meta", property="og:title")
         sub_m = re.search(r"r/([a-zA-Z0-9_]+)", final_url)
         if sub_m:
             subreddit = sub_m.group(1)
@@ -135,9 +168,8 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         log(f'Post Title : "{post_title}"', "head")
         log(f'Subreddit  : r/{subreddit} | ID: {post_id}', "info")
 
-        # Parse shreddit-comment elements
+        # Parse all shreddit-comment elements
         raw_comments = soup.find_all("shreddit-comment")
-        log(f"Found {len(raw_comments)} comments on page.", "info")
 
         comments = []
         for i, c in enumerate(raw_comments):
@@ -146,7 +178,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
             depth = int(c.get("depth", "0"))
             c_id = c.get("thingid", f"c_{i}")
 
-            # Extract text body
             body_el = (
                 c.find("div", slot="comment")
                 or c.find("div", class_="md")
@@ -154,7 +185,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
             )
             body = body_el.text.strip() if body_el else ""
 
-            # Skip empty deleted/bot placeholders if body is empty
             if not body and author == "[deleted]":
                 continue
 
@@ -173,9 +203,9 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
                 "replies":       []
             })
 
-        log(f"✓ Scraped {len(comments)} total comments.", "success")
+        log(f"[SUCCESS] Scraped {len(comments)} total comments.", "success")
 
-        post_data = {
+        return {
             "id":            post_id,
             "title":         post_title,
             "author":        post_author,
@@ -192,15 +222,13 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
             "total_scraped": len(comments),
         }
 
-        return post_data
-
     finally:
         if close_driver_on_exit and driver:
             driver.quit()
 
 
 # ---------------------------------------------------------------------------
-# Output Formatters
+# Formatters
 # ---------------------------------------------------------------------------
 
 def save_json(posts_data: list, path: Path):
@@ -231,7 +259,7 @@ def save_csv(posts_data: list, path: Path):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape Reddit comments via Selenium.")
+    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments via Selenium.")
     parser.add_argument("urls", nargs="+", metavar="URL", help="One or more Reddit post URLs")
     parser.add_argument("--output", "-o", choices=["json", "csv", "both"], default="both")
     parser.add_argument("--out-dir", "-d", default=".")
