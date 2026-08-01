@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# Environment / credentials — NEVER commit this
+.env
+
+# Output files
+output/
+*.json
+*.csv
+
+# IDE
+.vscode/
+.idea/
