@@ -1,8 +1,8 @@
 """
-Reddit Comment Scraper (Selenium Engine)
-===========================================
-Uses headless Chrome browser via Selenium to fetch posts and ALL comments.
-Includes interactive expansion loop for 'load more comments' buttons.
+Reddit Comment Scraper (Selenium Multi-Sort Engine)
+=====================================================
+Scrapes ALL comments from Reddit posts by cycling through all sort modes
+(top, new, old, controversial) and expanding all comment threads.
 
 Usage:
     python scraper.py "https://www.reddit.com/r/tamilyapping/s/msP5EVihR7"
@@ -74,18 +74,14 @@ def flatten(comments: list, flat: list = None) -> list:
     return flat
 
 
-def expand_all_comments(driver, log=print):
+def expand_page_comments(driver):
     """
-    Repeatedly scroll and click all 'shreddit-more-comment' / 'view more' buttons
-    to fully hydrate every single comment on the post.
+    Scroll and click 'load more comments' / 'view replies' buttons on current page.
     """
-    log("Expanding all comment threads ...", "info")
-
-    for iteration in range(1, 10):
+    for iteration in range(1, 7):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-        time.sleep(1.5)
+        time.sleep(1.2)
 
-        # Find buttons / elements for more comments
         more_elements = driver.find_elements(
             By.CSS_SELECTOR, "shreddit-more-comment, button, faceplate-partial"
         )
@@ -106,12 +102,8 @@ def expand_all_comments(driver, log=print):
             except Exception:
                 pass
 
-        total_loaded = len(driver.find_elements(By.TAG_NAME, "shreddit-comment"))
-        if clicked > 0:
-            log(f"  [Pass {iteration}] Clicked {clicked} expand buttons -> {total_loaded} comments", "info")
-        else:
-            if iteration > 2:
-                break
+        if clicked == 0 and iteration > 2:
+            break
 
 
 def scrape(url: str, driver=None, progress_cb=None) -> dict:
@@ -136,74 +128,88 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         time.sleep(3)
 
         final_url = driver.current_url
-        log(f"Resolved URL: {final_url}", "info")
+        base_clean_url = final_url.split("?")[0].rstrip("/")
 
-        # Hydrate all comments by scrolling & expanding
-        expand_all_comments(driver, log=log)
-
-        page_source = driver.page_source
-        soup = BeautifulSoup(page_source, "html.parser")
-
-        # Extract Post Title
-        post_title_el = (
-            soup.find("h1")
-            or soup.find("shreddit-title")
-            or soup.find("a", class_="title")
-        )
-        post_title = post_title_el.text.strip() if post_title_el else "Reddit Post"
+        post_id_m = re.search(r"/comments/([a-z0-9]+)", base_clean_url)
+        post_id = post_id_m.group(1) if post_id_m else "post"
 
         subreddit = ""
-        sub_m = re.search(r"r/([a-zA-Z0-9_]+)", final_url)
+        sub_m = re.search(r"r/([a-zA-Z0-9_]+)", base_clean_url)
         if sub_m:
             subreddit = sub_m.group(1)
 
-        post_id_m = re.search(r"/comments/([a-z0-9]+)", final_url)
-        post_id = post_id_m.group(1) if post_id_m else "post"
+        # Get initial metadata
+        soup_init = BeautifulSoup(driver.page_source, "html.parser")
+        post_title_el = (
+            soup_init.find("h1")
+            or soup_init.find("shreddit-title")
+            or soup_init.find("a", class_="title")
+        )
+        post_title = post_title_el.text.strip() if post_title_el else "Reddit Post"
 
         post_author = "[deleted]"
-        post_meta_el = soup.find("shreddit-post")
+        post_meta_el = soup_init.find("shreddit-post")
         if post_meta_el and post_meta_el.get("author"):
             post_author = post_meta_el.get("author")
 
         log(f'Post Title : "{post_title}"', "head")
         log(f'Subreddit  : r/{subreddit} | ID: {post_id}', "info")
 
-        # Parse all shreddit-comment elements
-        raw_comments = soup.find_all("shreddit-comment")
+        # Multi-sort scraping to collect 100% of comments across sort filters
+        sort_modes = ["top", "new", "old", "controversial"]
+        unique_comments_dict = {}
 
-        comments = []
-        for i, c in enumerate(raw_comments):
-            author = c.get("author", "[deleted]")
-            score = c.get("score", "0")
-            depth = int(c.get("depth", "0"))
-            c_id = c.get("thingid", f"c_{i}")
+        for sort_mode in sort_modes:
+            sort_url = f"{base_clean_url}/?sort={sort_mode}"
+            log(f"Fetching comments (sort={sort_mode}) ...", "info")
+            driver.get(sort_url)
+            time.sleep(2.5)
 
-            body_el = (
-                c.find("div", slot="comment")
-                or c.find("div", class_="md")
-                or c.find("p")
-            )
-            body = body_el.text.strip() if body_el else ""
+            expand_page_comments(driver)
 
-            if not body and author == "[deleted]":
-                continue
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            raw_comments = soup.find_all("shreddit-comment")
 
-            comments.append({
-                "id":            c_id,
-                "parent_id":     "",
-                "depth":         depth,
-                "author":        author,
-                "score":         score,
-                "created_utc":   "",
-                "created_human": "",
-                "is_submitter":  False,
-                "flair":         "",
-                "permalink":     final_url,
-                "body":          body,
-                "replies":       []
-            })
+            new_count = 0
+            for i, c in enumerate(raw_comments):
+                author = c.get("author", "[deleted]")
+                score = c.get("score", "0")
+                depth = int(c.get("depth", "0"))
+                c_id = c.get("thingid", f"c_{i}")
 
-        log(f"[SUCCESS] Scraped {len(comments)} total comments.", "success")
+                body_el = (
+                    c.find("div", slot="comment")
+                    or c.find("div", class_="md")
+                    or c.find("p")
+                )
+                body = body_el.text.strip() if body_el else ""
+
+                if not body and author == "[deleted]":
+                    continue
+
+                # Key by author + body content to uniquely identify comment
+                dedup_key = f"{c_id}:{author}:{body[:60]}"
+                if dedup_key not in unique_comments_dict:
+                    unique_comments_dict[dedup_key] = {
+                        "id":            c_id,
+                        "parent_id":     "",
+                        "depth":         depth,
+                        "author":        author,
+                        "score":         score,
+                        "created_utc":   "",
+                        "created_human": "",
+                        "is_submitter":  False,
+                        "flair":         "",
+                        "permalink":     base_clean_url,
+                        "body":          body,
+                        "replies":       []
+                    }
+                    new_count += 1
+
+            log(f"  Sort '{sort_mode}': {len(raw_comments)} comments on page (+{new_count} new unique)", "info")
+
+        all_comments = list(unique_comments_dict.values())
+        log(f"[SUCCESS] Total unique comments collected: {len(all_comments)}", "success")
 
         return {
             "id":            post_id,
@@ -212,14 +218,14 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
             "subreddit":     subreddit,
             "score":         0,
             "upvote_ratio":  None,
-            "num_comments":  len(comments),
+            "num_comments":  len(all_comments),
             "created_utc":   "",
-            "url":           final_url,
-            "permalink":     final_url,
+            "url":           base_clean_url,
+            "permalink":     base_clean_url,
             "selftext":      "",
             "flair":         "",
-            "comments":      comments,
-            "total_scraped": len(comments),
+            "comments":      all_comments,
+            "total_scraped": len(all_comments),
         }
 
     finally:
@@ -259,7 +265,7 @@ def save_csv(posts_data: list, path: Path):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments via Selenium.")
+    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments via Multi-Sort Selenium.")
     parser.add_argument("urls", nargs="+", metavar="URL", help="One or more Reddit post URLs")
     parser.add_argument("--output", "-o", choices=["json", "csv", "both"], default="both")
     parser.add_argument("--out-dir", "-d", default=".")
