@@ -1,11 +1,13 @@
 """
-Reddit Comment Scraper (Multi-Format Engine)
-==============================================
-Exports to:
-  1. Interactive HTML Document (.html) — Full dark-mode threaded reader UI with search & collapsible threads
-  2. Formatted Markdown (.md)          — Clean nested Markdown tree
-  3. JSON (.json)                      — Structured raw data
-  4. Flat CSV (.csv)                   — Data table
+Reddit Comment Scraper (Multi-Format & Media Engine)
+=====================================================
+Extracts text AND embedded media (Images, GIFs, Links) from all comments.
+
+Exports:
+  1. Interactive HTML Document (.html) — Renders embedded images and animated GIFs inline!
+  2. Formatted Markdown (.md)          — Embedded media links (![image](url))
+  3. Structured JSON (.json)           — Includes media_urls list
+  4. CSV Table (.csv)                  — Includes media_urls column
 
 Usage:
     python scraper.py "https://www.reddit.com/r/tamilyapping/s/msP5EVihR7"
@@ -33,7 +35,7 @@ from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
-# Driver initialization
+# Stealth Driver Initialization
 # ---------------------------------------------------------------------------
 
 def create_driver():
@@ -84,7 +86,10 @@ def flatten(comments: list, flat: list = None) -> list:
     if flat is None:
         flat = []
     for c in comments:
-        flat.append({k: v for k, v in c.items() if k != "replies"})
+        row = {k: v for k, v in c.items() if k != "replies"}
+        if isinstance(row.get("media_urls"), list):
+            row["media_urls"] = " | ".join(row["media_urls"])
+        flat.append(row)
         if c.get("replies"):
             flatten(c["replies"], flat)
     return flat
@@ -201,6 +206,7 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
 
             expand_page_comments(driver)
 
+            # JavaScript DOM extractor: extracts author, score, depth, text, AND image/GIF media URLs
             raw_comments = driver.execute_script("""
                 let list = [];
                 document.querySelectorAll('shreddit-comment').forEach(c => {
@@ -208,9 +214,24 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
                     let author = c.getAttribute('author') || '[deleted]';
                     let score = c.getAttribute('score') || '0';
                     let depth = parseInt(c.getAttribute('depth') || '0');
-                    let bodyEl = c.querySelector('div[slot="comment"]') || c.querySelector('p');
-                    let body = bodyEl ? bodyEl.innerText.strip ? bodyEl.innerText.strip() : bodyEl.innerText : '';
-                    list.push({id, author, score, depth, body});
+                    let bodyEl = c.querySelector('div[slot="comment"]') || c;
+                    let body = bodyEl ? (bodyEl.innerText ? bodyEl.innerText.trim() : '') : '';
+
+                    let mediaUrls = [];
+                    bodyEl.querySelectorAll('img, a, faceplate-img, source').forEach(el => {
+                        let src = el.getAttribute('src') || el.getAttribute('href') || el.getAttribute('srcset') || '';
+                        if (src) {
+                            if (!src.includes('avatar') && !src.includes('favicon') && !src.includes('styles/')) {
+                                if (src.includes('preview.redd.it') || src.includes('i.redd.it') || src.includes('giphy') || src.includes('.gif') || src.includes('.png') || src.includes('.jpg') || src.includes('.jpeg') || src.includes('external-preview')) {
+                                    if (!mediaUrls.includes(src)) {
+                                        mediaUrls.push(src);
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    list.push({id, author, score, depth, body, mediaUrls});
                 });
                 return list;
             """)
@@ -222,11 +243,12 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
                 depth = c.get("depth", 0)
                 c_id = c.get("id", "")
                 body = c.get("body", "").strip()
+                media_urls = c.get("mediaUrls", [])
 
-                if not body and author == "[deleted]":
+                if not body and not media_urls and author == "[deleted]":
                     continue
 
-                dedup_key = f"{author}:{body[:50]}"
+                dedup_key = f"{author}:{body[:50]}:{','.join(media_urls[:2])}"
                 if dedup_key not in unique_comments_dict:
                     unique_comments_dict[dedup_key] = {
                         "id":            c_id,
@@ -240,6 +262,7 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
                         "flair":         "",
                         "permalink":     base_clean_url,
                         "body":          body,
+                        "media_urls":    media_urls,
                         "replies":       []
                     }
                     new_count += 1
@@ -299,7 +322,7 @@ def save_csv(posts_data: list, path: Path):
     fieldnames = [
         "post_id", "post_title", "post_subreddit",
         "id", "parent_id", "depth", "author", "score",
-        "created_utc", "is_submitter", "flair", "permalink", "body",
+        "created_utc", "is_submitter", "flair", "permalink", "body", "media_urls"
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -331,9 +354,14 @@ def save_markdown(posts_data: list, path: Path):
             author = c["author"]
             score = c.get("score", "0")
             body = c.get("body", "").replace("\n", f"\n{indent}> ")
-            
+            media = c.get("media_urls", [])
+
             lines.append(f"{indent}* **u/{author}** (▲ {score}):")
-            lines.append(f"{indent}> {body}\n")
+            if body:
+                lines.append(f"{indent}> {body}")
+            for m_url in media:
+                lines.append(f"{indent}> ![comment media]({m_url})")
+            lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
     print(f"Markdown saved -> {path}")
@@ -341,12 +369,7 @@ def save_markdown(posts_data: list, path: Path):
 
 def save_html(posts_data: list, path: Path):
     """
-    Generates a standalone, beautiful dark-themed interactive HTML reader file.
-    Features:
-      - Reddit dark theme styling
-      - Instant client-side search/filter
-      - Thread depth indentation lines
-      - Responsive UI (viewable on desktop and mobile)
+    Generates an interactive HTML reader document that displays embedded images and animated GIFs!
     """
     posts_json = json.dumps(posts_data, ensure_ascii=False)
 
@@ -364,12 +387,10 @@ def save_html(posts_data: list, path: Path):
       --card-bg: #151922;
       --card-border: #232936;
       --accent: #ff4500;
-      --accent-hover: #ff5719;
       --text: #e2e8f0;
       --text-dim: #8a94a6;
       --success: #22c55e;
       --badge-bg: #1e2638;
-      --indent-colors: #ff4500, #a855f7, #06b6d4, #22c55e, #eab308;
     }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
@@ -401,7 +422,6 @@ def save_html(posts_data: list, path: Path):
     }}
     h1 {{ font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 12px; }}
     .meta {{ font-size: 0.9rem; color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }}
-    .meta span {{ display: flex; align-items: center; gap: 4px; }}
     .search-box {{
       width: 100%;
       padding: 12px 16px;
@@ -423,9 +443,7 @@ def save_html(posts_data: list, path: Path):
       border-radius: 8px;
       padding: 14px 18px;
       position: relative;
-      transition: border-color 0.15s;
     }}
-    .comment-card:hover {{ border-color: #313a4e; }}
     
     .comment-header {{ display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; margin-bottom: 8px; }}
     .author {{ font-weight: 600; color: var(--accent); }}
@@ -433,7 +451,21 @@ def save_html(posts_data: list, path: Path):
     
     .comment-body {{ font-size: 0.95rem; color: var(--text); white-space: pre-wrap; word-break: break-word; }}
     
-    /* Indentation border lines */
+    /* Inline Media Gallery for Images/GIFs */
+    .media-container {{
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }}
+    .media-container img {{
+      max-width: 100%;
+      max-height: 400px;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      object-fit: contain;
+    }}
+
     .depth-0 {{ margin-left: 0px; border-left: 3px solid #ff4500; }}
     .depth-1 {{ margin-left: 20px; border-left: 3px solid #a855f7; }}
     .depth-2 {{ margin-left: 40px; border-left: 3px solid #06b6d4; }}
@@ -469,7 +501,7 @@ def save_html(posts_data: list, path: Path):
               <span>💬 Scraped: <strong>${{scraped}}</strong> of <strong>${{target}}</strong> comments (${{pct}}%)</span>
               <span>🔗 <a href="${{post.permalink}}" target="_blank" style="color:var(--accent)">Original Post</a></span>
             </div>
-            <input type="text" class="search-box" id="search-${{post.id}}" placeholder="🔍 Filter comments by keyword or author..." onkeyup="filterComments('${{post.id}}')">
+            <input type="text" class="search-box" id="search-${{post.id}}" placeholder="🔍 Filter comments by keyword, author, or media..." onkeyup="filterComments('${{post.id}}')">
           </header>
 
           <div class="comment-tree" id="comments-${{post.id}}">
@@ -477,13 +509,25 @@ def save_html(posts_data: list, path: Path):
 
         post.comments.forEach((c, idx) => {{
           const depth = Math.min(parseInt(c.depth || 0), 5);
+          const mediaList = c.media_urls || [];
+          
+          let mediaHtml = "";
+          if (mediaList.length > 0) {{
+            mediaHtml += `<div class="media-container">`;
+            mediaList.forEach(mUrl => {{
+              mediaHtml += `<img src="${{escapeHtml(mUrl)}}" alt="Comment GIF/Image" loading="lazy">`;
+            }});
+            mediaHtml += `</div>`;
+          }}
+
           html += `
             <div class="comment-card depth-${{depth}}" data-author="${{escapeHtml(c.author).toLowerCase()}}" data-body="${{escapeHtml(c.body).toLowerCase()}}">
               <div class="comment-header">
                 <span class="author">u/${{escapeHtml(c.author)}}</span>
                 <span class="score">▲ ${{c.score}}</span>
               </div>
-              <div class="comment-body">${{escapeHtml(c.body)}}</div>
+              ${{c.body ? `<div class="comment-body">${{escapeHtml(c.body)}}</div>` : ''}}
+              ${{mediaHtml}}
             </div>
           `;
         }});
@@ -528,7 +572,7 @@ def save_html(posts_data: list, path: Path):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments with HTML, Markdown, JSON, CSV export.")
+    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments & embedded media (GIFs/Images).")
     parser.add_argument("urls", nargs="+", metavar="URL", help="One or more Reddit post URLs")
     parser.add_argument("--output", "-o", choices=["html", "md", "json", "csv", "all"], default="all")
     parser.add_argument("--out-dir", "-d", default=".")
