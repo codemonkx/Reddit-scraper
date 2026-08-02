@@ -1,8 +1,7 @@
 """
 Reddit Comment Scraper — Desktop GUI
 =====================================
-Uses Selenium Chrome Driver to scrape Reddit posts and comments.
-Bypasses all API credentials and bot blocks automatically.
+Uses Selenium Chrome Engine with Target Tracking to scrape all comments.
 
 Run:
     python gui.py
@@ -17,7 +16,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Import scraper module
 from scraper import scrape, create_driver, flatten, save_json, save_csv
 
 
@@ -83,7 +81,6 @@ class CommentCard(tk.Frame):
         body = tk.Frame(self, bg=BG2)
         body.pack(side="left", fill="both", expand=True, padx=12, pady=10)
 
-        # Header
         hdr = tk.Frame(body, bg=BG2)
         hdr.pack(fill="x")
 
@@ -103,7 +100,6 @@ class CommentCard(tk.Frame):
         tk.Label(hdr, text=f"  ▲ {score}", fg=sc,
                  bg=BG2, font=FONT_SMALL).pack(side="left", padx=(8, 0))
 
-        # Body text
         text = comment.get("body", "").strip()
         if len(text) > 450:
             text = text[:450] + "…"
@@ -131,7 +127,6 @@ class App(tk.Tk):
         self._build_ui()
 
     def _build_ui(self):
-        # Header bar
         bar = tk.Frame(self, bg=BG2, height=60)
         bar.pack(fill="x")
         bar.pack_propagate(False)
@@ -140,10 +135,10 @@ class App(tk.Tk):
                  font=("Segoe UI", 22)).pack(side="left", padx=(18, 4), pady=10)
         tk.Label(bar, text="Reddit Comment Scraper",
                  fg=TEXT, bg=BG2, font=FONT_TITLE).pack(side="left", pady=10)
-        tk.Label(bar, text="Paste a post URL → scrape all comments",
+        tk.Label(bar, text="Paste a post URL → check target & scrape all comments",
                  fg=TEXT_DIM, bg=BG2, font=FONT_SMALL).pack(side="left", padx=18)
 
-        tk.Label(bar, text=" ✓ Headless Chrome Engine ",
+        tk.Label(bar, text=" ✓ Target Tracking Engine ",
                  fg="#0f1117", bg=SUCCESS, font=FONT_BADGE,
                  padx=8, pady=3).pack(side="right", padx=16)
 
@@ -210,12 +205,10 @@ class App(tk.Tk):
         lbl.pack(side="left", padx=6)
         lbl.bind("<Button-1>", lambda e: self._pick_dir())
 
-        # Action Button
         self.scrape_btn = FlatButton(parent, text="▶  SCRAPE COMMENTS",
                                      command=self._start_scrape)
         self.scrape_btn.pack(fill="x", **pad, pady=(12, 10))
 
-        # Progress indicator
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("R.Horizontal.TProgressbar",
@@ -255,7 +248,6 @@ class App(tk.Tk):
         self.content = tk.Frame(parent, bg=BG)
         self.content.pack(fill="both", expand=True)
 
-        # Comments view
         self.comments_outer = tk.Frame(self.content, bg=BG)
         self.comments_outer.place(relx=0, rely=0, relwidth=1, relheight=1)
 
@@ -283,7 +275,6 @@ class App(tk.Tk):
                  fg=TEXT_DIM, bg=BG, font=("Segoe UI", 13),
                  justify="center").pack(expand=True, pady=80)
 
-        # Log view
         self.log_outer = tk.Frame(self.content, bg=BG)
         self.log_box   = scrolledtext.ScrolledText(
             self.log_outer, bg=BG2, fg=TEXT_DIM, font=FONT_MONO,
@@ -356,7 +347,7 @@ class App(tk.Tk):
         self.progress.start(12)
         self._clear_comments()
         self._tab("log")
-        self.log(f"Starting scrape for {len(urls)} URL(s) with Chrome Engine …", "head")
+        self.log(f"Starting target tracking scrape for {len(urls)} URL(s) …", "head")
 
         threading.Thread(target=self._thread, args=(urls,), daemon=True).start()
 
@@ -380,8 +371,10 @@ class App(tk.Tk):
 
             if posts:
                 self._auto_save()
-                total = sum(p["total_scraped"] for p in posts)
-                self.set_status(f"Done — {total} comments", SUCCESS)
+                total_target  = sum(p.get("target_count", 0) for p in posts)
+                total_scraped = sum(p["total_scraped"] for p in posts)
+                pct = (total_scraped / total_target * 100) if total_target > 0 else 100.0
+                self.set_status(f"Done — Scraped {total_scraped} of {total_target} comments ({pct:.1f}%)", SUCCESS)
                 self.after(0, self._render_comments)
                 self.after(0, lambda: self._tab("comments"))
             else:
@@ -421,9 +414,15 @@ class App(tk.Tk):
             info.pack(fill="x", padx=12, pady=(0, 10))
             tk.Label(info, text=f"r/{post['subreddit']}", fg=ACCENT,
                      bg=BG3, font=FONT_SMALL).pack(side="left")
-            tk.Label(info,
-                     text=f"  •  u/{post['author']}  •  {post['total_scraped']} comments",
-                     fg=TEXT_DIM, bg=BG3, font=FONT_SMALL).pack(side="left")
+
+            target  = post.get("target_count", 0)
+            scraped = post.get("total_scraped", 0)
+            pct     = (scraped / target * 100) if target > 0 else 100.0
+
+            summary_txt = f"  •  u/{post['author']}  •  Target: {target} comments  |  Scraped: {scraped} ({pct:.1f}%)"
+
+            tk.Label(info, text=summary_txt,
+                     fg=SUCCESS if pct > 70 else WARNING, bg=BG3, font=FONT_SMALL).pack(side="left")
 
             for c in post["comments"]:
                 CommentCard(self.inner, c).pack(fill="x", padx=4, pady=1)
