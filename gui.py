@@ -1,7 +1,7 @@
 """
-Reddit Comment Scraper — Desktop GUI
-=====================================
-Uses Selenium Chrome Engine with Target Tracking to scrape all comments.
+Reddit Comment Scraper — Desktop GUI (Multi-Format Support)
+============================================================
+Supports HTML (Interactive Reader), Markdown (.md), JSON, and CSV exports.
 
 Run:
     python gui.py
@@ -16,7 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from scraper import scrape, create_driver, flatten, save_json, save_csv
+from scraper import scrape, create_driver, flatten, save_html, save_markdown, save_json, save_csv
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -50,7 +50,7 @@ FONT_BADGE = ("Segoe UI", 8, "bold")
 class FlatButton(tk.Label):
     def __init__(self, parent, text, command=None,
                  bg=ACCENT, fg="white", hover_bg=ACCENT2,
-                 padx=20, pady=8, **kw):
+                 padx=16, pady=6, **kw):
         super().__init__(parent, text=text, bg=bg, fg=fg,
                          font=FONT_HEAD, cursor="hand2",
                          padx=padx, pady=pady, **kw)
@@ -115,8 +115,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Reddit Comment Scraper")
-        self.geometry("1100x760")
-        self.minsize(900, 600)
+        self.geometry("1150x780")
+        self.minsize(950, 620)
         self.configure(bg=BG)
         self.resizable(True, True)
 
@@ -135,10 +135,10 @@ class App(tk.Tk):
                  font=("Segoe UI", 22)).pack(side="left", padx=(18, 4), pady=10)
         tk.Label(bar, text="Reddit Comment Scraper",
                  fg=TEXT, bg=BG2, font=FONT_TITLE).pack(side="left", pady=10)
-        tk.Label(bar, text="Paste a post URL → check target & scrape all comments",
+        tk.Label(bar, text="Scrape and export comments as HTML Reader, Markdown, JSON, or CSV",
                  fg=TEXT_DIM, bg=BG2, font=FONT_SMALL).pack(side="left", padx=18)
 
-        tk.Label(bar, text=" ✓ Target Tracking Engine ",
+        tk.Label(bar, text=" ✓ HTML Reader Enabled ",
                  fg="#0f1117", bg=SUCCESS, font=FONT_BADGE,
                  padx=8, pady=3).pack(side="right", padx=16)
 
@@ -180,22 +180,29 @@ class App(tk.Tk):
 
         tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", **pad, pady=4)
 
-        tk.Label(parent, text="OUTPUT FORMAT", fg=TEXT_DIM, bg=BG2,
+        tk.Label(parent, text="EXPORT FORMAT", fg=TEXT_DIM, bg=BG2,
                  font=FONT_BADGE).pack(anchor="w", pady=(12, 4), **pad)
 
-        fmt_row = tk.Frame(parent, bg=BG2)
-        fmt_row.pack(fill="x", **pad, pady=(0, 8))
-        tk.Label(fmt_row, text="Format:", fg=TEXT, bg=BG2,
-                 font=FONT_SMALL).pack(side="left")
-        self.fmt_var = tk.StringVar(value="both")
-        for val, lbl in [("json", "JSON"), ("csv", "CSV"), ("both", "Both")]:
-            tk.Radiobutton(fmt_row, text=lbl, variable=self.fmt_var, value=val,
+        fmt_frame = tk.Frame(parent, bg=BG2)
+        fmt_frame.pack(fill="x", **pad, pady=(0, 8))
+        self.fmt_var = tk.StringVar(value="all")
+
+        formats = [
+            ("html", "🌐 HTML Reader (Recommended)"),
+            ("md",   "📝 Markdown (.md)"),
+            ("json", "📦 JSON Data"),
+            ("csv",  "📊 CSV Table"),
+            ("all",  "⚡ All Formats"),
+        ]
+
+        for val, lbl in formats:
+            tk.Radiobutton(fmt_frame, text=lbl, variable=self.fmt_var, value=val,
                            bg=BG2, fg=TEXT, selectcolor=BG3,
                            activebackground=BG2, activeforeground=TEXT,
-                           font=FONT_SMALL).pack(side="left", padx=6)
+                           font=FONT_SMALL, anchor="w").pack(fill="x", pady=2)
 
         dir_row = tk.Frame(parent, bg=BG2)
-        dir_row.pack(fill="x", **pad, pady=(0, 16))
+        dir_row.pack(fill="x", **pad, pady=(8, 16))
         tk.Label(dir_row, text="Save to:", fg=TEXT, bg=BG2,
                  font=FONT_SMALL).pack(side="left")
         self.out_dir_var = tk.StringVar(value=str(Path.cwd()))
@@ -235,15 +242,11 @@ class App(tk.Tk):
         self.tab_l.pack(side="left")
 
         dl = tk.Frame(tab_bar, bg=BG)
-        dl.pack(side="right", padx=8)
-        FlatButton(dl, text="⬇ JSON",
-                   command=lambda: self._download("json"),
-                   bg=BG3, hover_bg=BORDER, fg=TEXT,
-                   padx=12, pady=6).pack(side="left", padx=4)
-        FlatButton(dl, text="⬇ CSV",
-                   command=lambda: self._download("csv"),
-                   bg=BG3, hover_bg=BORDER, fg=TEXT,
-                   padx=12, pady=6).pack(side="left", padx=4)
+        dl.pack(side="right", padx=4)
+        FlatButton(dl, text="🌐 HTML", command=lambda: self._download("html"), bg=BG3, hover_bg=BORDER, fg=TEXT, padx=10, pady=4).pack(side="left", padx=2)
+        FlatButton(dl, text="📝 MD", command=lambda: self._download("md"), bg=BG3, hover_bg=BORDER, fg=TEXT, padx=10, pady=4).pack(side="left", padx=2)
+        FlatButton(dl, text="⬇ JSON", command=lambda: self._download("json"), bg=BG3, hover_bg=BORDER, fg=TEXT, padx=10, pady=4).pack(side="left", padx=2)
+        FlatButton(dl, text="⬇ CSV", command=lambda: self._download("csv"), bg=BG3, hover_bg=BORDER, fg=TEXT, padx=10, pady=4).pack(side="left", padx=2)
 
         self.content = tk.Frame(parent, bg=BG)
         self.content.pack(fill="both", expand=True)
@@ -347,7 +350,7 @@ class App(tk.Tk):
         self.progress.start(12)
         self._clear_comments()
         self._tab("log")
-        self.log(f"Starting target tracking scrape for {len(urls)} URL(s) …", "head")
+        self.log(f"Starting scrape for {len(urls)} URL(s) …", "head")
 
         threading.Thread(target=self._thread, args=(urls,), daemon=True).start()
 
@@ -440,30 +443,14 @@ class App(tk.Tk):
             else f"reddit_{len(self._posts_data)}_posts"
         )
 
-        if fmt in ("json", "both"):
-            p = out_dir / f"{base}.json"
-            p.write_text(json.dumps(self._posts_data, ensure_ascii=False, indent=2), encoding="utf-8")
-            self.log(f"JSON saved -> {p}", "success")
-
-        if fmt in ("csv", "both"):
-            p = out_dir / f"{base}.csv"
-            fieldnames = [
-                "post_id", "post_title", "post_subreddit",
-                "id", "parent_id", "depth", "author", "score",
-                "created_utc", "is_submitter", "flair", "permalink", "body",
-            ]
-            with p.open("w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-                writer.writeheader()
-                for post in self._posts_data:
-                    for row in flatten(post["comments"]):
-                        row.update({
-                            "post_id": post["id"],
-                            "post_title": post["title"],
-                            "post_subreddit": post["subreddit"]
-                        })
-                        writer.writerow(row)
-            self.log(f"CSV  saved -> {p}", "success")
+        if fmt in ("html", "all"):
+            save_html(self._posts_data, out_dir / f"{base}.html")
+        if fmt in ("md", "all"):
+            save_markdown(self._posts_data, out_dir / f"{base}.md")
+        if fmt in ("json", "all"):
+            save_json(self._posts_data, out_dir / f"{base}.json")
+        if fmt in ("csv", "all"):
+            save_csv(self._posts_data, out_dir / f"{base}.csv")
 
     def _download(self, fmt):
         if not self._posts_data:
@@ -480,28 +467,16 @@ class App(tk.Tk):
             filetypes=[(f"{fmt.upper()} files", f"*{ext}"), ("All", "*.*")])
         if not path:
             return
-        if fmt == "json":
-            Path(path).write_text(
-                json.dumps(self._posts_data, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
-        else:
-            fieldnames = [
-                "post_id", "post_title", "post_subreddit",
-                "id", "parent_id", "depth", "author", "score",
-                "created_utc", "is_submitter", "flair", "permalink", "body",
-            ]
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-                writer.writeheader()
-                for post in self._posts_data:
-                    for row in flatten(post["comments"]):
-                        row.update({
-                            "post_id": post["id"],
-                            "post_title": post["title"],
-                            "post_subreddit": post["subreddit"]
-                        })
-                        writer.writerow(row)
+
+        if fmt == "html":
+            save_html(self._posts_data, Path(path))
+        elif fmt == "md":
+            save_markdown(self._posts_data, Path(path))
+        elif fmt == "json":
+            save_json(self._posts_data, Path(path))
+        elif fmt == "csv":
+            save_csv(self._posts_data, Path(path))
+
         messagebox.showinfo("Saved", f"Saved to:\n{path}")
 
 

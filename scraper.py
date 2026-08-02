@@ -1,7 +1,11 @@
 """
-Reddit Comment Scraper — Stealth Driver Engine
-===============================================
-Includes anti-bot stealth parameters to prevent 'Prove your humanity' captchas.
+Reddit Comment Scraper (Multi-Format Engine)
+==============================================
+Exports to:
+  1. Interactive HTML Document (.html) — Full dark-mode threaded reader UI with search & collapsible threads
+  2. Formatted Markdown (.md)          — Clean nested Markdown tree
+  3. JSON (.json)                      — Structured raw data
+  4. Flat CSV (.csv)                   — Data table
 
 Usage:
     python scraper.py "https://www.reddit.com/r/tamilyapping/s/msP5EVihR7"
@@ -29,7 +33,7 @@ from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
-# Stealth Driver initialization
+# Driver initialization
 # ---------------------------------------------------------------------------
 
 def create_driver():
@@ -39,8 +43,6 @@ def create_driver():
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("window-size=1920,1080")
-    
-    # Stealth options to prevent bot detection / "Prove your humanity"
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
     options.add_experimental_option("useAutomationExtension", False)
@@ -53,7 +55,6 @@ def create_driver():
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
 
-    # Mask navigator.webdriver flag
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
         {
@@ -68,7 +69,7 @@ def create_driver():
 
 
 # ---------------------------------------------------------------------------
-# Helpers & Parsing
+# Helpers
 # ---------------------------------------------------------------------------
 
 def ts_to_iso(utc_ts: float) -> str:
@@ -164,7 +165,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         )
         post_title = post_title_el.text.strip() if post_title_el else "Reddit Post"
 
-        # Check for captcha
         if "Prove your humanity" in post_title or "captcha" in driver.page_source.lower():
             log("Warning: Captcha detected, retrying page load...", "warn")
             time.sleep(2)
@@ -172,7 +172,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
             time.sleep(3.5)
             soup_init = BeautifulSoup(driver.page_source, "html.parser")
 
-        # READ TARGET COMMENT COUNT
         target_count = 0
         post_el = soup_init.find("shreddit-post")
         if post_el and post_el.get("comment-count"):
@@ -288,12 +287,12 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Formatters
+# Formatters: HTML, Markdown, JSON, CSV
 # ---------------------------------------------------------------------------
 
 def save_json(posts_data: list, path: Path):
     path.write_text(json.dumps(posts_data, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"JSON saved -> {path}")
+    print(f"JSON     saved -> {path}")
 
 
 def save_csv(posts_data: list, path: Path):
@@ -311,7 +310,217 @@ def save_csv(posts_data: list, path: Path):
                 row["post_title"]     = post["title"]
                 row["post_subreddit"] = post["subreddit"]
                 writer.writerow(row)
-    print(f"CSV  saved -> {path}")
+    print(f"CSV      saved -> {path}")
+
+
+def save_markdown(posts_data: list, path: Path):
+    lines = []
+    for post in posts_data:
+        target = post.get("target_count", 0)
+        scraped = post.get("total_scraped", 0)
+        pct = (scraped / target * 100) if target > 0 else 100.0
+
+        lines.append(f"# {post['title']}")
+        lines.append(f"**Subreddit:** r/{post['subreddit']} | **Author:** u/{post['author']} | **Comments:** {scraped} / {target} ({pct:.1f}%)\n")
+        lines.append(f"**Original Link:** [{post['permalink']}]({post['permalink']})\n")
+        lines.append("---\n")
+
+        for c in post["comments"]:
+            depth = int(c.get("depth", 0))
+            indent = "  " * depth
+            author = c["author"]
+            score = c.get("score", "0")
+            body = c.get("body", "").replace("\n", f"\n{indent}> ")
+            
+            lines.append(f"{indent}* **u/{author}** (▲ {score}):")
+            lines.append(f"{indent}> {body}\n")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Markdown saved -> {path}")
+
+
+def save_html(posts_data: list, path: Path):
+    """
+    Generates a standalone, beautiful dark-themed interactive HTML reader file.
+    Features:
+      - Reddit dark theme styling
+      - Instant client-side search/filter
+      - Thread depth indentation lines
+      - Responsive UI (viewable on desktop and mobile)
+    """
+    posts_json = json.dumps(posts_data, ensure_ascii=False)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reddit Comments Reader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {{
+      --bg: #0b0e14;
+      --card-bg: #151922;
+      --card-border: #232936;
+      --accent: #ff4500;
+      --accent-hover: #ff5719;
+      --text: #e2e8f0;
+      --text-dim: #8a94a6;
+      --success: #22c55e;
+      --badge-bg: #1e2638;
+      --indent-colors: #ff4500, #a855f7, #06b6d4, #22c55e, #eab308;
+    }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 24px 16px;
+      max-width: 1000px;
+      margin: 0 auto;
+    }}
+    header {{
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }}
+    .badge {{
+      display: inline-block;
+      background: var(--badge-bg);
+      color: var(--accent);
+      font-weight: 600;
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }}
+    h1 {{ font-size: 1.5rem; font-weight: 700; color: #fff; margin-bottom: 12px; }}
+    .meta {{ font-size: 0.9rem; color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }}
+    .meta span {{ display: flex; align-items: center; gap: 4px; }}
+    .search-box {{
+      width: 100%;
+      padding: 12px 16px;
+      background: #0f121a;
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }}
+    .search-box:focus {{ border-color: var(--accent); }}
+    
+    .comment-tree {{ display: flex; flex-direction: column; gap: 8px; }}
+    
+    .comment-card {{
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 8px;
+      padding: 14px 18px;
+      position: relative;
+      transition: border-color 0.15s;
+    }}
+    .comment-card:hover {{ border-color: #313a4e; }}
+    
+    .comment-header {{ display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; margin-bottom: 8px; }}
+    .author {{ font-weight: 600; color: var(--accent); }}
+    .score {{ color: var(--success); font-weight: 600; }}
+    
+    .comment-body {{ font-size: 0.95rem; color: var(--text); white-space: pre-wrap; word-break: break-word; }}
+    
+    /* Indentation border lines */
+    .depth-0 {{ margin-left: 0px; border-left: 3px solid #ff4500; }}
+    .depth-1 {{ margin-left: 20px; border-left: 3px solid #a855f7; }}
+    .depth-2 {{ margin-left: 40px; border-left: 3px solid #06b6d4; }}
+    .depth-3 {{ margin-left: 60px; border-left: 3px solid #22c55e; }}
+    .depth-4 {{ margin-left: 80px; border-left: 3px solid #eab308; }}
+    .depth-5 {{ margin-left: 100px; border-left: 3px solid #ec4899; }}
+
+    footer {{ text-align: center; margin-top: 40px; font-size: 0.85rem; color: var(--text-dim); }}
+  </style>
+</head>
+<body>
+
+  <div id="app"></div>
+
+  <script>
+    const data = {posts_json};
+
+    function renderApp() {{
+      const app = document.getElementById("app");
+      let html = "";
+
+      data.forEach(post => {{
+        const target = post.target_count || 0;
+        const scraped = post.total_scraped || 0;
+        const pct = target > 0 ? ((scraped / target) * 100).toFixed(1) : "100";
+
+        html += `
+          <header>
+            <div class="badge">r/${{post.subreddit}}</div>
+            <h1>${{escapeHtml(post.title)}}</h1>
+            <div class="meta">
+              <span>👤 u/${{post.author}}</span>
+              <span>💬 Scraped: <strong>${{scraped}}</strong> of <strong>${{target}}</strong> comments (${{pct}}%)</span>
+              <span>🔗 <a href="${{post.permalink}}" target="_blank" style="color:var(--accent)">Original Post</a></span>
+            </div>
+            <input type="text" class="search-box" id="search-${{post.id}}" placeholder="🔍 Filter comments by keyword or author..." onkeyup="filterComments('${{post.id}}')">
+          </header>
+
+          <div class="comment-tree" id="comments-${{post.id}}">
+        `;
+
+        post.comments.forEach((c, idx) => {{
+          const depth = Math.min(parseInt(c.depth || 0), 5);
+          html += `
+            <div class="comment-card depth-${{depth}}" data-author="${{escapeHtml(c.author).toLowerCase()}}" data-body="${{escapeHtml(c.body).toLowerCase()}}">
+              <div class="comment-header">
+                <span class="author">u/${{escapeHtml(c.author)}}</span>
+                <span class="score">▲ ${{c.score}}</span>
+              </div>
+              <div class="comment-body">${{escapeHtml(c.body)}}</div>
+            </div>
+          `;
+        }});
+
+        html += `</div>`;
+      }});
+
+      html += `<footer>Exported with Reddit Scraper • ${{new Date().toLocaleDateString()}}</footer>`;
+      app.innerHTML = html;
+    }}
+
+    function filterComments(postId) {{
+      const input = document.getElementById('search-' + postId).value.toLowerCase();
+      const cards = document.querySelectorAll('#comments-' + postId + ' .comment-card');
+      cards.forEach(card => {{
+        const author = card.getAttribute('data-author');
+        const body = card.getAttribute('data-body');
+        if (author.includes(input) || body.includes(input)) {{
+          card.style.display = 'block';
+        }} else {{
+          card.style.display = 'none';
+        }}
+      }});
+    }}
+
+    function escapeHtml(str) {{
+      if (!str) return '';
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }}
+
+    renderApp();
+  </script>
+</body>
+</html>
+"""
+    path.write_text(html_content, encoding="utf-8")
+    print(f"HTML     saved -> {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -319,9 +528,9 @@ def save_csv(posts_data: list, path: Path):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments with Stealth Target Tracking.")
+    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments with HTML, Markdown, JSON, CSV export.")
     parser.add_argument("urls", nargs="+", metavar="URL", help="One or more Reddit post URLs")
-    parser.add_argument("--output", "-o", choices=["json", "csv", "both"], default="both")
+    parser.add_argument("--output", "-o", choices=["html", "md", "json", "csv", "all"], default="all")
     parser.add_argument("--out-dir", "-d", default=".")
     args = parser.parse_args()
 
@@ -352,13 +561,18 @@ def main():
         else f"reddit_{len(posts)}_posts"
     )
 
-    if args.output in ("json", "both"):
+    fmt = args.output
+    if fmt in ("html", "all"):
+        save_html(posts, out_dir / f"{base}.html")
+    if fmt in ("md", "all"):
+        save_markdown(posts, out_dir / f"{base}.md")
+    if fmt in ("json", "all"):
         save_json(posts, out_dir / f"{base}.json")
-    if args.output in ("csv", "both"):
+    if fmt in ("csv", "all"):
         save_csv(posts, out_dir / f"{base}.csv")
 
     total = sum(p["total_scraped"] for p in posts)
-    print(f"\nDone! {len(posts)} post(s) | {total} total comments.")
+    print(f"\nDone! {len(posts)} post(s) | {total} total comments exported.")
 
 
 if __name__ == "__main__":
