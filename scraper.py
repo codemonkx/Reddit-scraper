@@ -7,7 +7,7 @@ Exports:
   1. Interactive HTML Document (.html) — Renders embedded images and animated GIFs inline!
   2. Formatted Markdown (.md)          — Embedded media links (![image](url))
   3. Structured JSON (.json)           — Includes media_urls list
-  4. CSV Table (.csv)                  — Includes media_urls column
+  4. CSV Table (.csv)                  — Clean single-line CSV rows (sanitized newlines)
 
 Usage:
     python scraper.py "https://www.reddit.com/r/tamilyapping/s/msP5EVihR7"
@@ -206,7 +206,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
 
             expand_page_comments(driver)
 
-            # JavaScript DOM extractor: extracts author, score, depth, text, AND image/GIF media URLs
             raw_comments = driver.execute_script("""
                 let list = [];
                 document.querySelectorAll('shreddit-comment').forEach(c => {
@@ -319,6 +318,9 @@ def save_json(posts_data: list, path: Path):
 
 
 def save_csv(posts_data: list, path: Path):
+    """
+    Saves clean, single-line CSV rows where body newlines are sanitized into space or \\n.
+    """
     fieldnames = [
         "post_id", "post_title", "post_subreddit",
         "id", "parent_id", "depth", "author", "score",
@@ -332,6 +334,9 @@ def save_csv(posts_data: list, path: Path):
                 row["post_id"]        = post["id"]
                 row["post_title"]     = post["title"]
                 row["post_subreddit"] = post["subreddit"]
+                # Sanitize body newlines for clean CSV reading
+                if isinstance(row.get("body"), str):
+                    row["body"] = row["body"].replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
                 writer.writerow(row)
     print(f"CSV      saved -> {path}")
 
@@ -451,7 +456,6 @@ def save_html(posts_data: list, path: Path):
     
     .comment-body {{ font-size: 0.95rem; color: var(--text); white-space: pre-wrap; word-break: break-word; }}
     
-    /* Inline Media Gallery for Images/GIFs */
     .media-container {{
       margin-top: 10px;
       display: flex;
