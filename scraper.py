@@ -1,9 +1,7 @@
 """
-Reddit Comment Scraper (Target Tracking Engine)
-=================================================
-1. Reads total post comments count directly from Reddit metadata.
-2. Iterates through all sort views to extract all comment text.
-3. Provides full comparison summary of target vs scraped comments.
+Reddit Comment Scraper — Stealth Driver Engine
+===============================================
+Includes anti-bot stealth parameters to prevent 'Prove your humanity' captchas.
 
 Usage:
     python scraper.py "https://www.reddit.com/r/tamilyapping/s/msP5EVihR7"
@@ -19,7 +17,6 @@ import argparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Force UTF-8 output encoding for Windows terminal safety
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -32,7 +29,7 @@ from bs4 import BeautifulSoup
 
 
 # ---------------------------------------------------------------------------
-# Driver initialization
+# Stealth Driver initialization
 # ---------------------------------------------------------------------------
 
 def create_driver():
@@ -41,15 +38,32 @@ def create_driver():
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--blink-settings=imagesEnabled=false")
+    options.add_argument("window-size=1920,1080")
+    
+    # Stealth options to prevent bot detection / "Prove your humanity"
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+    options.add_experimental_option("useAutomationExtension", False)
+    
     options.add_argument(
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
-    options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
+
+    # Mask navigator.webdriver flag
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {
+            "source": """
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """
+        },
+    )
     return driver
 
 
@@ -76,11 +90,8 @@ def flatten(comments: list, flat: list = None) -> list:
 
 
 def expand_page_comments(driver):
-    """
-    Scroll and click 'load more comments' / 'view replies' buttons on current page.
-    """
     prev_dom_count = 0
-    for pass_num in range(1, 10):
+    for pass_num in range(1, 8):
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
         time.sleep(1.2)
 
@@ -125,14 +136,14 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
 
     close_driver_on_exit = False
     if driver is None:
-        log("Launching headless browser ...", "info")
+        log("Launching stealth browser ...", "info")
         driver = create_driver()
         close_driver_on_exit = True
 
     try:
         log(f"Navigating to post: {url}", "info")
         driver.get(url)
-        time.sleep(3)
+        time.sleep(3.5)
 
         final_url = driver.current_url
         base_clean_url = final_url.split("?")[0].rstrip("/")
@@ -153,7 +164,15 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         )
         post_title = post_title_el.text.strip() if post_title_el else "Reddit Post"
 
-        # 1. READ TARGET COMMENT COUNT FIRST
+        # Check for captcha
+        if "Prove your humanity" in post_title or "captcha" in driver.page_source.lower():
+            log("Warning: Captcha detected, retrying page load...", "warn")
+            time.sleep(2)
+            driver.get(base_clean_url)
+            time.sleep(3.5)
+            soup_init = BeautifulSoup(driver.page_source, "html.parser")
+
+        # READ TARGET COMMENT COUNT
         target_count = 0
         post_el = soup_init.find("shreddit-post")
         if post_el and post_el.get("comment-count"):
@@ -172,7 +191,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         log(f'TARGET COMMENTS ON POST: {target_count}', "head")
         log("==================================================", "head")
 
-        # 2. MULTI-SORT SCRAPING
         sort_modes = ["confidence", "top", "new", "old", "controversial"]
         unique_comments_dict = {}
 
@@ -237,7 +255,6 @@ def scrape(url: str, driver=None, progress_cb=None) -> dict:
         all_comments = list(unique_comments_dict.values())
         scraped_total = len(all_comments)
 
-        # 3. FINAL COMPARISON SUMMARY
         completion_pct = (scraped_total / target_count * 100) if target_count > 0 else 100.0
 
         log("==================================================", "head")
@@ -302,7 +319,7 @@ def save_csv(posts_data: list, path: Path):
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments with Target Tracking.")
+    parser = argparse.ArgumentParser(description="Scrape ALL Reddit comments with Stealth Target Tracking.")
     parser.add_argument("urls", nargs="+", metavar="URL", help="One or more Reddit post URLs")
     parser.add_argument("--output", "-o", choices=["json", "csv", "both"], default="both")
     parser.add_argument("--out-dir", "-d", default=".")
